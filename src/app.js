@@ -1,55 +1,167 @@
 // Telegram API client
 const { Telegraf } = require("telegraf");
-// substrate.js file
-const Substrate = require("./substrate");
+// this is for address format verification
+const UtilCrypto = require("@polkadot/util-crypto");
+// connect to the node
+const { ApiPromise, WsProvider, Keyring } = require("@polkadot/api");
+const { BN } = require("bn.js");
+const fs = require("fs");
+// this is .json additional types file
+const ADDITIONAL_TYPES = require("./types/types.json");
+
+// this is the Generic Faucet Interface
+class GenericFaucetInterface {
+  constructor(config) {
+    this.types = config.types;
+    // pjs api
+    this.api = undefined;
+    this.keyFile = config.keyFile;
+    this.keyRing = undefined;
+    this.providerUrl = config.providerUrl;
+    this.amount = config.amount;
+    this.tokenName = config.tokenName;
+    this.addressType = config.addressType;
+    this.timeLimitHours = config.timeLimitHours;
+    this.decimals = new BN(config.decimals);
+    // Help message when user first starts or types help command
+    this.helpMessage = `Welcome to the ${process.env.FAUCET_NAME}! 
+    To request for tokens send the message: 
+    "/request ADDRESS" 
+    with your correct ${this.tokenName} address`;
+    // Error Messages
+    this.timeLimitMessage = `Sorry please wait for ${this.timeLimitHours} hours, between token requests from the same telegram account!`;
+    this.invalidAddressMessage = `Invalid address! Plese use the generic substrate format with address type ${this.addressType}!`;
+    // record storage (for time limit)
+    this.records = {};
+  }
+
+  // tries to get valid address from message, if fails, returns undefined
+  getAddressFromMessage(message) {
+    const address = message.text.substring(9);
+    const check = UtilCrypto.checkAddress(address, this.addressType);
+    if (check[0]) {
+      // Address match
+      return address;
+    } else {
+      // Not a valid address
+      return undefined;
+    }
+  }
+
+  // returns the help message
+  getHelpMessage() {
+    return this.helpMessage;
+  }
+
+  // loads json file and inits keyring
+  initKeyring() {
+    const keyring = new Keyring({ type: "sr25519" });
+    // // TODO: better error handling
+    // let jsonKey = JSON.parse(fs.readFileSync(this.keyFile));
+    // this.keyRing = keyring.addFromJson(jsonKey);
+  }
+  // This initializes api
+  async initApi() {
+    const ws = new WsProvider(this.providerUrl);
+    // Instantiate the API
+    this.api = await ApiPromise.create({ types: this.types, provider: ws });
+    // Retrieve the chain & node information information via rpc calls
+    const [chain, nodeName, nodeVersion] = await Promise.all([
+      this.api.rpc.system.chain(),
+      this.api.rpc.system.name(),
+      this.api.rpc.system.version(),
+    ]);
+    // Log these stats
+    console.log(
+      `You are connected to chain ${chain} using ${nodeName} v${nodeVersion}`
+    );
+  }
+  async sendToken(address) {
+    const api = await this.initApi();
+    this.initKeyring();
+    const parsedAmount = this.decimals.mul(new BN(this.amount));
+    console.log(`Sending ${this.amount} ${this.tokenName} to ${address}`);
+    const transfer = this.api.tx.balances.transfer(address, parsedAmount);
+    console.log(transfer);
+    // const hash = await transfer.signAndSend(this.keyRing);
+    // console.log("Transfer sent with hash", hash.toHex());
+  }
+  // function that telgram bot calls
+  async requestToken(message) {
+    let response;
+    const now = Date.now();
+    //   const username = message["from"]["username"];
+    const senderId = message["from"]["id"];
+    // Get the senders record
+    const senderRecords = this.records[senderId];
+
+    const address = this.getAddressFromMessage(message);
+    if (address) {
+      response = `Sending ${this.amount} ${this.tokenName} to ${address}!`;
+      // if exists
+      if (senderRecords) {
+        // make sure last request was long time ago
+        const last = senderRecords.slice(-1)[0];
+        // check if now - last > timeLimitHours
+        if (now - last > this.timeLimitHours * 1000 * 60) {
+          // yes limit has passed
+          await this.sendToken(address);
+          // update the records to show this
+          this.records[senderId].push(now);
+        } else {
+          // this means user requested tokens already
+          response = this.timeLimitMessage;
+        }
+      } else {
+        // this is users first request
+        // yes limit has passed
+        await this.sendToken(address);
+        // create the record
+        this.records[senderId] = [];
+        // update the records to show this
+        this.records[senderId].push(now);
+      }
+    } else {
+      response = this.invalidAddressMessage;
+    }
+    return response;
+  }
+}
+
 // load env vars
 require("dotenv").config();
 
-// Parse the env vars
-// Amount of native tokens to send
-const AMOUNT = parseFloat(process.env.AMOUNT);
-// Address Type
-// https://wiki.polkadot.network/docs/en/learn-accounts, generic-substrate=42, kusama=2
-const ADDRESS_TYPE = parseInt(process.env.ADDRESS_TYPE);
-//Limit in hours for token requests by same user
-const TIME_LIMIT_HOURS = parseFloat(process.env.TIME_LIMIT_HOURS);
+const config = {
+  types: ADDITIONAL_TYPES,
+  providerUrl: process.env.NODE_WS_URL,
+  amount: parseFloat(process.env.AMOUNT),
+  tokenName: process.env.TOKEN_NAME,
+  addressType: parseInt(process.env.ADDRESS_TYPE),
+  timeLimitHours: parseFloat(process.env.TIME_LIMIT_HOURS),
+  decimals: parseInt(process.env.DECIMALS),
+  keyFile: process.env.KEY_FILE,
+};
 
-// Help message when user first starts or types help command
-const helpMessage = `Welcome to the ${process.env.FAUCET_NAME}! 
-To request for tokens send the message: 
-"/request ADDRESS" 
-with your correct ${process.env.TOKEN_NAME} address`;
-// Error Messages
-const timeLimitMessage = `Sorry please wait for ${TIME_LIMIT_HOURS} hours, between token requests from the same telegram account!`;
-const invalidAddressMessage = `Invalid address! Plese use the generic substrate format with address type ${ADDRESS_TYPE}!`;
+const faucet = new GenericFaucetInterface(config);
 
-// temp storage of records so we can set a time limit for requests from same user
-let records = {};
-// create the bot instance
+// Initialize telegram bot
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
+// Initialize the faucet
 
 // On user starting convo
 bot.start(async (ctx) => {
-  await ctx.reply(helpMessage);
+  await ctx.reply(faucet.getHelpMessage());
 });
 
 // On user types help
 bot.help(async (ctx) => {
-  await ctx.reply(helpMessage);
+  await ctx.reply(faucet.getHelpMessage());
 });
 
 // On request token command
 bot.command("request", async (ctx) => {
   console.log("Got token request!");
-  const resp = await Substrate.requestToken(
-    ctx.message,
-    records,
-    AMOUNT,
-    process.env.TOKEN_NAME,
-    invalidAddressMessage,
-    timeLimitMessage,
-    ADDRESS_TYPE
-  );
+  const resp = await faucet.requestToken(ctx.message);
   await ctx.reply(resp);
 });
 
