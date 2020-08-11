@@ -15,7 +15,7 @@ class GenericFaucetInterface {
     this.types = config.types;
     // pjs api
     this.api = undefined;
-    this.keyFile = config.keyFile;
+    this.mnemonic = config.mnemonic;
     this.keyRing = undefined;
     this.providerUrl = config.providerUrl;
     this.amount = config.amount;
@@ -57,8 +57,7 @@ class GenericFaucetInterface {
   initKeyring() {
     const keyring = new Keyring({ type: "sr25519" });
     // // TODO: better error handling
-    // let jsonKey = JSON.parse(fs.readFileSync(this.keyFile));
-    // this.keyRing = keyring.addFromJson(jsonKey);
+    this.keyRing = keyring.addFromMnemonic(this.mnemonic);
   }
   // This initializes api
   async initApi() {
@@ -82,9 +81,8 @@ class GenericFaucetInterface {
     const parsedAmount = this.decimals.mul(new BN(this.amount));
     console.log(`Sending ${this.amount} ${this.tokenName} to ${address}`);
     const transfer = this.api.tx.balances.transfer(address, parsedAmount);
-    console.log(transfer);
-    // const hash = await transfer.signAndSend(this.keyRing);
-    // console.log("Transfer sent with hash", hash.toHex());
+    const hash = await transfer.signAndSend(this.keyRing);
+    console.log("Transfer sent with hash", hash.toHex());
   }
   // function that telgram bot calls
   async requestToken(message) {
@@ -139,7 +137,7 @@ const config = {
   addressType: parseInt(process.env.ADDRESS_TYPE),
   timeLimitHours: parseFloat(process.env.TIME_LIMIT_HOURS),
   decimals: parseInt(process.env.DECIMALS),
-  keyFile: process.env.KEY_FILE,
+  mnemonic: process.env.MNEMONIC,
 };
 
 const faucet = new GenericFaucetInterface(config);
@@ -160,7 +158,6 @@ bot.help(async (ctx) => {
 
 // On request token command
 bot.command("request", async (ctx) => {
-  console.log("Got token request!");
   const resp = await faucet.requestToken(ctx.message);
   await ctx.reply(resp);
 });
