@@ -100,8 +100,8 @@ class GenericFaucetInterface {
       if (senderRecords) {
         // make sure last request was long time ago
         const last = senderRecords.slice(-1)[0];
-        // check if now - last > timeLimitHours
-        if (now - last > this.timeLimitHours * 1000 * 60) {
+        // check if now - last > timeLimitHours * 60 * 60 * 1000
+        if (now - last > this.timeLimitHours * 1000 * 60 * 60) {
           // yes limit has passed
           await this.sendToken(address);
           // update the records to show this
